@@ -1,0 +1,82 @@
+name: Bug report
+description: Report a reproducible problem with Live2D Viewer.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not upload proprietary model files, textures,
+        or motions. Share reproduction details and sanitized logs only.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: "0.2.0 or commit hash"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - Android
+        - Both
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: GPU / device
+      description: Windows GPU model or Android device, OS version, and driver.
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Remove local paths, URLs, tokens, and model-identifying paths.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have removed secrets, local paths, and proprietary model files from this report.
+          required: true
+        - label: I understand this is an unofficial project and not affiliated with Live2D Inc.
+          required: true

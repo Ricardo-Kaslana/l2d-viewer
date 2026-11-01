@@ -1,0 +1,37 @@
+name: live2d_viewer
+description: "Unofficial Live2D model viewer for Windows and Android"
+publish_to: 'none'
+version: 0.2.0+4
+
+environment:
+  sdk: ^3.9.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_rust_bridge: 2.9.0
+  flutter_riverpod: ^2.6.1
+  path_provider: ^2.1.0
+  http: ^1.2.0
+  crypto: ^3.0.3
+  # FRB-generated frame_driver.dart imports freezed_annotation at
+  # runtime (the @freezed sealed FrameEvent class). The analyzer
+  # flags it as "depend_on_referenced_packages" unless it is a
+  # regular dependency rather than only a dev dependency.
+  freezed_annotation: ^2.4.4
+  # File/directory picker for the custom model path browser.
+  file_picker: ^8.0.0
+  # Runtime permission requests for Android external storage access.
+  permission_handler: ^11.3.1
+  # ZIP extraction for remote model package downloads.
+  archive: ^4.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  freezed: ^2.5.7
+  build_runner: ^2.4.0
+
+flutter:
+  uses-material-design: true

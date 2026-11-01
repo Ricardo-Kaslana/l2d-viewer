@@ -1,0 +1,21 @@
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.jar binary
+*.zip binary
+*.so binary
+*.dll binary
+*.exe binary
+*.ttf binary
+*.otf binary
+*.moc3 binary
+
+third_party/mocari/** linguist-vendored
+app/lib/src/rust/** linguist-generated=true
+crates/mocari_host/src/frb_generated.rs linguist-generated=true

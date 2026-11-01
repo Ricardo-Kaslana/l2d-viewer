@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = ["crates/mocari_host"]
+
+# Vendored mocari 0.4.0 with Cubism's out-of-range disable semantics:
+# when any bound parameter falls outside a keyform binding's key range
+# (+/- 10^-decimal_places), the art mesh/part/deformer is hidden instead
+# of clamped to the nearest keyform. Upstream clamps, which drew every
+# hand/costume variant at once on parameter-switched multi-variant models.
+[patch.crates-io]
+mocari = { path = "third_party/mocari" }
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.97"
+description = "Unofficial Live2D model viewer for Windows and Android"
+
+[workspace.dependencies]
+mocari = "0.4"
+wgpu = "30"
+winit = "0.30"
+ndk = "0.9"
+ndk-context = "0.1"
+ndk-sys = "0.5"
+thiserror = "2"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+# flutter_rust_bridge is pinned exactly to 2.9.0 in
+# `crates/mocari_host/Cargo.toml` and `app/pubspec.yaml` (see the
+# `frb-codegen-drift` CI job). A loose `= "2"` workspace entry
+# would shadow that exact pin during dependency resolution on
+# downstream consumers; keep this section free of any frb entry.
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+# Do NOT set `panic = "abort"`: `frb_api.rs` relies on `catch_unwind`
+# (load_model, frame loop) to convert Rust panics into Dart-visible
+# errors; abort would kill the whole process instead.

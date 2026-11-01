@@ -1,0 +1,36 @@
+# The release application targets Windows and Android. `winit` and its
+# Linux/Wayland dependencies are dev-only (examples/tests), so they are not
+# part of the shipped dependency graph.
+[graph]
+exclude-dev = true
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-linux-android",
+]
+
+[advisories]
+yanked = "deny"
+ignore = []
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

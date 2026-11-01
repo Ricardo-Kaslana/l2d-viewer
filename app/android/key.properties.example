@@ -1,0 +1,6 @@
+# Copy to app/android/key.properties for release signing.
+# Never commit the real file or the keystore.
+storeFile=release.jks
+storePassword=change-me
+keyAlias=live2dviewer
+keyPassword=change-me

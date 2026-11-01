@@ -1,0 +1,1725 @@
+use mocari::{
+    core::Matrix44,
+    moc3::{Moc3DrawableBlendMode, Moc3DrawableMesh, Moc3DrawableVertex},
+    render::wgpu::{
+        WgpuClippingLayoutError, WgpuClippingPlan, WgpuClippingRect, WgpuDrawableVertex,
+        WgpuLive2dRenderer, WgpuMaskChannel, WgpuMeshBuffers, WgpuRenderError, WgpuTextureError,
+        encode_wgpu_clip_params, encode_wgpu_indices, encode_wgpu_mask_params, encode_wgpu_matrix,
+        encode_wgpu_vertices, live2d_blend_state, live2d_masked_wgsl_source, live2d_wgsl_source,
+        mask_wgsl_source, preferred_surface_format, wgpu_mask_blend_state,
+        wgpu_vertices_from_drawable,
+    },
+};
+
+#[test]
+fn encodes_wgpu_vertices_and_indices() {
+    let mesh = Moc3DrawableMesh::from_parts(
+        3,
+        4,
+        0.75,
+        20.0,
+        vec![
+            Moc3DrawableVertex::new([1.0, 2.0], [0.25, 0.5]),
+            Moc3DrawableVertex::new([3.0, 4.0], [0.75, 1.0]),
+        ],
+        vec![0, 1],
+        vec![7],
+    );
+
+    let vertices = wgpu_vertices_from_drawable(&mesh);
+    let vertex_bytes = encode_wgpu_vertices(&vertices);
+    let index_bytes = encode_wgpu_indices(mesh.indices());
+
+    assert_eq!(
+        vertices,
+        vec![
+            WgpuDrawableVertex::new([1.0, 2.0], [0.25, 0.5], 0.75),
+            WgpuDrawableVertex::new([3.0, 4.0], [0.75, 1.0], 0.75),
+        ]
+    );
+    assert_eq!(vertex_bytes.len(), 88);
+    assert_eq!(&vertex_bytes[0..4], &1.0f32.to_ne_bytes());
+    assert_eq!(&vertex_bytes[12..16], &0.5f32.to_ne_bytes());
+    assert_eq!(&vertex_bytes[16..20], &0.75f32.to_ne_bytes());
+    // multiply defaults to (1,1,1) at offset 20, screen to (0,0,0) at offset 32
+    assert_eq!(&vertex_bytes[20..24], &1.0f32.to_ne_bytes());
+    assert_eq!(&vertex_bytes[32..36], &0.0f32.to_ne_bytes());
+    assert_eq!(index_bytes, vec![0, 0, 1, 0]);
+}
+
+#[test]
+fn live2d_wgsl_samples_texture_and_applies_opacity() {
+    let source = live2d_wgsl_source();
+    let shader_file = std::fs::read_to_string("src/render/shaders/live2d.wgsl").unwrap();
+
+    assert_eq!(source, shader_file);
+    assert!(source.contains("@location(0) position: vec2<f32>"));
+    assert!(source.contains("@location(1) uv: vec2<f32>"));
+    assert!(source.contains("@location(2) opacity: f32"));
+    assert!(source.contains("@location(3) multiply: vec3<f32>"));
+    assert!(source.contains("@location(4) screen: vec3<f32>"));
+    assert!(source.contains("@group(1) @binding(0)"));
+    assert!(source.contains("live2d_transform * vec4<f32>(input.position, 0.0, 1.0)"));
+    assert!(source.contains("textureSample"));
+    assert!(source.contains("let alpha = sample.a * input.opacity"));
+    assert!(source.contains("rgb = rgb + input.screen - rgb * input.screen"));
+    assert!(source.contains("vec4<f32>(rgb * alpha, alpha)"));
+}
+
+#[test]
+fn mask_wgsl_uses_external_file_and_channel_params() {
+    let source = mask_wgsl_source();
+    let shader_file = std::fs::read_to_string("src/render/shaders/mask.wgsl").unwrap();
+
+    assert_eq!(source, shader_file);
+    assert!(source.contains("@group(2) @binding(0)"));
+    assert!(source.contains("channel_flag: vec4<f32>"));
+    assert!(source.contains("base_rect: vec4<f32>"));
+    assert!(source.contains("step(mask_params.base_rect.x, pos.x)"));
+    assert!(source.contains("textureSample(live2d_texture, live2d_sampler, input.uv).a"));
+    assert!(source.contains("return mask_params.channel_flag * source_alpha"));
+}
+
+#[test]
+fn live2d_masked_wgsl_samples_inverse_mask_channel() {
+    let source = live2d_masked_wgsl_source();
+    let shader_file = std::fs::read_to_string("src/render/shaders/live2d_masked.wgsl").unwrap();
+
+    assert_eq!(source, shader_file);
+    assert!(source.contains("@group(2) @binding(0)"));
+    assert!(source.contains("@group(3) @binding(0)"));
+    assert!(source.contains("clip_matrix: mat4x4<f32>"));
+    assert!(source.contains("channel_flag: vec4<f32>"));
+    assert!(source.contains("clip_params.clip_matrix * position"));
+    assert!(source.contains("rgb = rgb + input.screen - rgb * input.screen"));
+    assert!(source.contains("vec4<f32>(rgb * alpha, alpha)"));
+    assert!(source.contains("dot(mask_sample, clip_params.channel_flag)"));
+    assert!(source.contains("select(masked, 1.0 - masked, clip_params.inverted.x > 0.5)"));
+}
+
+#[test]
+fn encodes_wgpu_transform_matrix() {
+    let mut matrix = Matrix44::identity();
+    matrix.scale(2.0, 3.0);
+    matrix.translate(4.0, 5.0);
+
+    let bytes = encode_wgpu_matrix(&matrix);
+
+    assert_eq!(bytes.len(), 64);
+    assert_eq!(&bytes[0..4], &2.0f32.to_ne_bytes());
+    assert_eq!(&bytes[20..24], &3.0f32.to_ne_bytes());
+    assert_eq!(&bytes[48..52], &4.0f32.to_ne_bytes());
+    assert_eq!(&bytes[52..56], &5.0f32.to_ne_bytes());
+}
+
+#[test]
+fn encodes_mask_params_from_layout_channel_and_bounds() {
+    let layout = mocari::render::wgpu::WgpuClippingLayout::new(
+        WgpuMaskChannel::Green,
+        WgpuClippingRect::new(0.5, 0.0, 0.5, 1.0),
+    );
+
+    let bytes = encode_wgpu_mask_params(layout);
+
+    assert_eq!(bytes.len(), 32);
+    assert_eq!(&bytes[0..4], &0.0f32.to_ne_bytes());
+    assert_eq!(&bytes[4..8], &1.0f32.to_ne_bytes());
+    assert_eq!(&bytes[8..12], &0.0f32.to_ne_bytes());
+    assert_eq!(&bytes[12..16], &0.0f32.to_ne_bytes());
+    assert_eq!(&bytes[16..20], &0.0f32.to_ne_bytes());
+    assert_eq!(&bytes[20..24], &(-1.0f32).to_ne_bytes());
+    assert_eq!(&bytes[24..28], &1.0f32.to_ne_bytes());
+    assert_eq!(&bytes[28..32], &1.0f32.to_ne_bytes());
+}
+
+#[test]
+fn creates_mask_params_bind_group() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let layout = mocari::render::wgpu::WgpuClippingLayout::new(
+        WgpuMaskChannel::Red,
+        WgpuClippingRect::new(0.0, 0.0, 1.0, 1.0),
+    );
+
+    let params = renderer.create_mask_params(&device, layout);
+
+    let _ = params.buffer();
+    let _ = params.bind_group();
+    let _ = renderer.mask_params_bind_group_layout();
+}
+
+#[test]
+fn mask_params_update_skips_unchanged_layout() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let layout = mocari::render::wgpu::WgpuClippingLayout::new(
+        WgpuMaskChannel::Red,
+        WgpuClippingRect::new(0.0, 0.0, 1.0, 1.0),
+    );
+    let changed = mocari::render::wgpu::WgpuClippingLayout::new(
+        WgpuMaskChannel::Red,
+        WgpuClippingRect::new(0.25, 0.25, 0.5, 0.5),
+    );
+    let mut params = renderer.create_mask_params(&device, layout);
+
+    assert!(!params.update_layout(&queue, layout));
+    assert!(params.update_layout(&queue, changed));
+}
+
+#[test]
+fn encodes_clip_params_from_draw_matrix_and_channel() {
+    let mut matrix = Matrix44::identity();
+    matrix.scale(0.25, 0.5);
+    matrix.translate(0.75, 0.25);
+
+    let bytes = encode_wgpu_clip_params(&matrix, WgpuMaskChannel::Blue, true);
+
+    assert_eq!(bytes.len(), 96);
+    assert_eq!(&bytes[0..4], &0.25f32.to_ne_bytes());
+    assert_eq!(&bytes[20..24], &0.5f32.to_ne_bytes());
+    assert_eq!(&bytes[48..52], &0.75f32.to_ne_bytes());
+    assert_eq!(&bytes[52..56], &0.25f32.to_ne_bytes());
+    assert_eq!(&bytes[64..68], &0.0f32.to_ne_bytes());
+    assert_eq!(&bytes[68..72], &0.0f32.to_ne_bytes());
+    assert_eq!(&bytes[72..76], &1.0f32.to_ne_bytes());
+    assert_eq!(&bytes[76..80], &0.0f32.to_ne_bytes());
+    assert_eq!(&bytes[80..84], &1.0f32.to_ne_bytes());
+    assert_eq!(&bytes[84..88], &0.0f32.to_ne_bytes());
+}
+
+#[test]
+fn creates_clip_params_bind_group() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+
+    let params =
+        renderer.create_clip_params(&device, &Matrix44::identity(), WgpuMaskChannel::Red, false);
+
+    let _ = params.buffer();
+    let _ = params.bind_group();
+    let _ = renderer.clip_params_bind_group_layout();
+}
+
+#[test]
+fn clip_params_update_skips_unchanged_params() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let matrix = Matrix44::identity();
+    let mut changed = Matrix44::identity();
+    changed.scale(2.0, 1.0);
+    let mut params = renderer.create_clip_params(&device, &matrix, WgpuMaskChannel::Red, false);
+
+    assert!(!params.update_params(&queue, &matrix, WgpuMaskChannel::Red, false));
+    assert!(params.update_params(&queue, &changed, WgpuMaskChannel::Red, false));
+}
+
+#[test]
+fn exposes_live2d_premultiplied_blend_states() {
+    let normal = live2d_blend_state(Moc3DrawableBlendMode::Normal);
+    assert_eq!(normal.color.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(normal.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+    assert_eq!(normal.alpha.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(normal.alpha.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
+
+    let additive = live2d_blend_state(Moc3DrawableBlendMode::Additive);
+    assert_eq!(additive.color.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(additive.color.dst_factor, wgpu::BlendFactor::One);
+    assert_eq!(additive.alpha.src_factor, wgpu::BlendFactor::Zero);
+    assert_eq!(additive.alpha.dst_factor, wgpu::BlendFactor::One);
+
+    let multiplicative = live2d_blend_state(Moc3DrawableBlendMode::Multiplicative);
+    assert_eq!(multiplicative.color.src_factor, wgpu::BlendFactor::Dst);
+    assert_eq!(
+        multiplicative.color.dst_factor,
+        wgpu::BlendFactor::OneMinusSrcAlpha
+    );
+    assert_eq!(multiplicative.alpha.src_factor, wgpu::BlendFactor::Zero);
+    assert_eq!(multiplicative.alpha.dst_factor, wgpu::BlendFactor::One);
+}
+
+#[test]
+fn mask_blend_state_accumulates_coverage() {
+    let blend = wgpu_mask_blend_state();
+
+    assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.alpha.src_factor, wgpu::BlendFactor::One);
+    assert_eq!(blend.alpha.dst_factor, wgpu::BlendFactor::One);
+}
+
+#[test]
+fn prefers_unorm_surface_format_for_live2d_gamma_blending() {
+    let formats = [
+        wgpu::TextureFormat::Bgra8UnormSrgb,
+        wgpu::TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        wgpu::TextureFormat::Rgba8Unorm,
+    ];
+
+    assert_eq!(
+        preferred_surface_format(&formats),
+        Some(wgpu::TextureFormat::Bgra8Unorm)
+    );
+}
+
+#[test]
+fn creates_pipeline_and_encodes_draw_calls() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+
+    let mesh = Moc3DrawableMesh::from_parts(
+        0,
+        0,
+        1.0,
+        10.0,
+        vec![
+            Moc3DrawableVertex::new([-0.5, -0.5], [0.0, 1.0]),
+            Moc3DrawableVertex::new([0.5, -0.5], [1.0, 1.0]),
+            Moc3DrawableVertex::new([0.0, 0.5], [0.5, 0.0]),
+        ],
+        vec![0, 1, 2],
+        vec![],
+    );
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &[mesh]).unwrap();
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.texture"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = renderer.create_texture_bind_group(&device, &texture_view);
+
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.target"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let drawn = renderer.draw(&mut pass, &buffers, &[bind_group]).unwrap();
+        assert_eq!(drawn, 1);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn creates_mask_pipeline_and_encodes_mask_draw_call() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let transform = renderer.create_transform(&device, &Matrix44::identity());
+    let params = renderer.create_mask_params(
+        &device,
+        mocari::render::wgpu::WgpuClippingLayout::new(
+            WgpuMaskChannel::Red,
+            WgpuClippingRect::new(0.0, 0.0, 1.0, 1.0),
+        ),
+    );
+    let mask_target = renderer.create_mask_render_target(&device, 16).unwrap();
+    let mesh = test_mesh_with_draw_order(0, 0.0);
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &[mesh]).unwrap();
+    let drawable = &buffers.drawables()[0];
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.mask_pipeline_encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.mask_pipeline_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: mask_target.view(),
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        pass.set_pipeline(renderer.mask_pipeline());
+        pass.set_bind_group(0, texture.bind_group(), &[]);
+        pass.set_bind_group(1, transform.bind_group(), &[]);
+        pass.set_bind_group(2, params.bind_group(), &[]);
+        pass.set_vertex_buffer(0, buffers.vertex_buffer().slice(drawable.vertex_range()));
+        pass.set_index_buffer(drawable.index_buffer().slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..drawable.index_count(), 0, 0..1);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn creates_masked_pipeline_and_encodes_masked_draw_call() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let mask_target = renderer.create_mask_render_target(&device, 16).unwrap();
+    let transform = renderer.create_transform(&device, &Matrix44::identity());
+    let clip_params =
+        renderer.create_clip_params(&device, &Matrix44::identity(), WgpuMaskChannel::Red, false);
+    let mesh = test_mesh_with_draw_order(0, 0.0);
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &[mesh]).unwrap();
+    let drawable = &buffers.drawables()[0];
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.masked_pipeline_target"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.masked_pipeline_encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.masked_pipeline_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        pass.set_pipeline(renderer.masked_pipeline_for_blend_mode(Moc3DrawableBlendMode::Normal));
+        pass.set_bind_group(0, texture.bind_group(), &[]);
+        pass.set_bind_group(1, transform.bind_group(), &[]);
+        pass.set_bind_group(2, mask_target.bind_group(), &[]);
+        pass.set_bind_group(3, clip_params.bind_group(), &[]);
+        pass.set_vertex_buffer(0, buffers.vertex_buffer().slice(drawable.vertex_range()));
+        pass.set_index_buffer(drawable.index_buffer().slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..drawable.index_count(), 0, 0..1);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn draws_prepared_mask_contexts_into_mask_target() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let clipped = test_mesh_with_masks(0, 0.0, vec![1]);
+    let mask = test_mesh_with_draw_order(0, 1.0);
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &[clipped, mask]).unwrap();
+    let mut plan = WgpuClippingPlan::from_mesh_buffers(&buffers);
+    plan.prepare_single_texture_masks(&buffers).unwrap();
+    let clipping_resources = renderer.create_clipping_resources(&device, &plan).unwrap();
+    assert_eq!(clipping_resources.contexts().len(), 1);
+
+    let mask_target = renderer.create_mask_render_target(&device, 16).unwrap();
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.draw_masks_encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.draw_masks_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: mask_target.view(),
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let drawn = renderer
+            .draw_masks_with_textures(&mut pass, &buffers, &clipping_resources, &[texture])
+            .unwrap();
+        assert_eq!(drawn, 1);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn draws_masked_and_unmasked_drawables_with_prepared_clipping() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let clipped = test_mesh_with_masks(0, 0.0, vec![1]);
+    let mask = test_mesh_with_draw_order(0, 1.0);
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &[clipped, mask]).unwrap();
+    let mut plan = WgpuClippingPlan::from_mesh_buffers(&buffers);
+    plan.prepare_single_texture_masks(&buffers).unwrap();
+    let clipping_resources = renderer.create_clipping_resources(&device, &plan).unwrap();
+    let mask_target = renderer.create_mask_render_target(&device, 16).unwrap();
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.clipped_draw_target"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.clipped_draw_encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.clipped_mask_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: mask_target.view(),
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        renderer
+            .draw_masks_with_textures(
+                &mut pass,
+                &buffers,
+                &clipping_resources,
+                std::slice::from_ref(&texture),
+            )
+            .unwrap();
+    }
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.clipped_draw_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        let drawn = renderer
+            .draw_with_textures_and_clipping(
+                &mut pass,
+                &buffers,
+                std::slice::from_ref(&texture),
+                &clipping_resources,
+                &mask_target,
+            )
+            .unwrap();
+        assert_eq!(drawn, 2);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn mesh_buffers_expose_stable_draw_order_indices() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let meshes = [
+        test_mesh_with_draw_order(0, 30.0),
+        test_mesh_with_draw_order(1, 10.0),
+        test_mesh_with_draw_order(2, 10.0),
+    ];
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &meshes).unwrap();
+
+    assert_eq!(buffers.draw_order_indices(), vec![1, 2, 0]);
+}
+
+#[test]
+fn mesh_buffers_use_render_order_rank_to_break_draw_order_ties() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let meshes = [
+        test_mesh_with_render_order(0, 650.0, 70),
+        test_mesh_with_render_order(1, 650.0, 49),
+        test_mesh_with_render_order(2, 600.0, 90),
+    ];
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &meshes).unwrap();
+
+    assert_eq!(buffers.draw_order_indices(), vec![2, 1, 0]);
+}
+
+// Regression for layer flicker during motion: draw order is quantized to an
+// integer before sorting, so sub-integer jitter from per-frame
+// keyform interpolation can never swap two drawables that share an integer draw
+// order. The 499.9998 / 500.0001 pair must order exactly like a 500.0 / 500.0
+// pair, decided only by the stable render-order rank.
+#[test]
+fn mesh_buffers_quantize_draw_order_to_avoid_flicker() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let jittered = [
+        test_mesh_with_render_order(0, 499.9998, 70),
+        test_mesh_with_render_order(1, 500.0001, 49),
+    ];
+    let exact = [
+        test_mesh_with_render_order(0, 500.0, 70),
+        test_mesh_with_render_order(1, 500.0, 49),
+    ];
+
+    let jittered = WgpuMeshBuffers::from_drawables(&device, &jittered).unwrap();
+    let exact = WgpuMeshBuffers::from_drawables(&device, &exact).unwrap();
+
+    assert_eq!(jittered.draw_order_indices(), vec![1, 0]);
+    assert_eq!(jittered.draw_order_indices(), exact.draw_order_indices());
+}
+
+#[test]
+fn mesh_buffers_update_drawables_reuses_topology_and_refreshes_draw_info() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let original = test_mesh_with_render_order(0, 20.0, 1);
+    let updated = Moc3DrawableMesh::from_parts_with_render_order(
+        0,
+        0,
+        0.25,
+        10.0,
+        0,
+        vec![
+            Moc3DrawableVertex::new([-1.0, -1.5], [0.0, 1.0]),
+            Moc3DrawableVertex::new([0.5, -0.5], [1.0, 1.0]),
+            Moc3DrawableVertex::new([0.0, 0.5], [0.5, 0.0]),
+        ],
+        vec![0, 1, 2],
+        Vec::new(),
+    );
+    let mut buffers = WgpuMeshBuffers::from_drawables(&device, &[original]).unwrap();
+
+    let update = buffers
+        .update_drawables(&queue, std::slice::from_ref(&updated))
+        .unwrap();
+
+    assert_eq!(update.uploaded_drawables(), 1);
+    assert!(update.bounds_changed());
+    let drawable = &buffers.drawables()[0];
+    assert_eq!(drawable.index_count(), 3);
+    assert_f32_close(drawable.opacity(), 0.25);
+    assert_f32_close(drawable.draw_order(), 10.0);
+    assert_eq!(drawable.render_order(), 0);
+    assert_rect_close(
+        drawable.bounds().unwrap(),
+        WgpuClippingRect::new(-1.0, -1.5, 1.5, 2.0),
+    );
+    assert_eq!(buffers.draw_order_indices(), vec![0]);
+}
+
+#[test]
+fn mesh_buffers_update_drawables_skips_unchanged_vertex_uploads() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let unchanged = test_mesh_with_render_order(0, 20.0, 1);
+    let mut buffers = WgpuMeshBuffers::from_drawables(&device, std::slice::from_ref(&unchanged))
+        .expect("mesh buffers");
+
+    let update = buffers
+        .update_drawables(&queue, std::slice::from_ref(&unchanged))
+        .unwrap();
+
+    assert_eq!(update.uploaded_drawables(), 0);
+    assert!(!update.bounds_changed());
+    assert!(!update.visibility_changed());
+}
+
+#[test]
+fn mesh_buffers_update_drawables_reports_unchanged_bounds_for_opacity_updates() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let original = test_mesh_with_render_order(0, 20.0, 1);
+    let updated = Moc3DrawableMesh::from_parts_with_render_order(
+        original.texture_index(),
+        original.drawable_flags(),
+        0.25,
+        original.draw_order(),
+        original.render_order(),
+        original.vertices().to_vec(),
+        original.indices().to_vec(),
+        original.masks().to_vec(),
+    );
+    let mut buffers = WgpuMeshBuffers::from_drawables(&device, &[original]).expect("mesh buffers");
+
+    let update = buffers
+        .update_drawables(&queue, std::slice::from_ref(&updated))
+        .unwrap();
+
+    assert_eq!(update.uploaded_drawables(), 1);
+    assert!(!update.bounds_changed());
+    assert!(!update.visibility_changed());
+}
+
+#[test]
+fn mesh_buffers_update_drawables_reports_visibility_changes() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let original = test_mesh_with_opacity(0, 20.0, 1.0);
+    let updated = Moc3DrawableMesh::from_parts_with_render_order(
+        original.texture_index(),
+        original.drawable_flags(),
+        0.0,
+        original.draw_order(),
+        original.render_order(),
+        original.vertices().to_vec(),
+        original.indices().to_vec(),
+        original.masks().to_vec(),
+    );
+    let mut buffers = WgpuMeshBuffers::from_drawables(&device, &[original]).expect("mesh buffers");
+
+    let update = buffers
+        .update_drawables(&queue, std::slice::from_ref(&updated))
+        .unwrap();
+
+    assert_eq!(update.uploaded_drawables(), 1);
+    assert!(!update.bounds_changed());
+    assert!(update.visibility_changed());
+}
+
+#[test]
+fn mesh_buffers_update_drawables_keeps_hidden_vertex_buffers_current() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let original = test_mesh_with_opacity(0, 20.0, 0.0);
+    let hidden_update = Moc3DrawableMesh::from_parts_with_render_order(
+        original.texture_index(),
+        original.drawable_flags(),
+        0.0,
+        original.draw_order(),
+        original.render_order(),
+        vec![
+            Moc3DrawableVertex::new([-0.75, -0.75], [0.0, 1.0]),
+            Moc3DrawableVertex::new([0.75, -0.75], [1.0, 1.0]),
+            Moc3DrawableVertex::new([0.0, 0.75], [0.5, 0.0]),
+        ],
+        original.indices().to_vec(),
+        original.masks().to_vec(),
+    );
+    let visible_update = Moc3DrawableMesh::from_parts_with_render_order(
+        hidden_update.texture_index(),
+        hidden_update.drawable_flags(),
+        1.0,
+        hidden_update.draw_order(),
+        hidden_update.render_order(),
+        hidden_update.vertices().to_vec(),
+        hidden_update.indices().to_vec(),
+        hidden_update.masks().to_vec(),
+    );
+    let mut buffers = WgpuMeshBuffers::from_drawables(&device, &[original]).expect("mesh buffers");
+
+    let hidden = buffers
+        .update_drawables(&queue, std::slice::from_ref(&hidden_update))
+        .unwrap();
+
+    assert_eq!(hidden.uploaded_drawables(), 1);
+    assert!(hidden.bounds_changed());
+    assert!(!hidden.visibility_changed());
+
+    let visible = buffers
+        .update_drawables(&queue, std::slice::from_ref(&visible_update))
+        .unwrap();
+
+    assert_eq!(visible.uploaded_drawables(), 1);
+    assert!(!visible.bounds_changed());
+    assert!(visible.visibility_changed());
+}
+
+#[test]
+fn mesh_buffers_update_drawables_rejects_topology_changes() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let original = test_mesh_with_draw_order(0, 0.0);
+    let mut buffers = WgpuMeshBuffers::from_drawables(&device, &[original]).unwrap();
+    let changed_indices = Moc3DrawableMesh::from_parts(
+        0,
+        0,
+        1.0,
+        0.0,
+        vec![
+            Moc3DrawableVertex::new([-0.5, -0.5], [0.0, 1.0]),
+            Moc3DrawableVertex::new([0.5, -0.5], [1.0, 1.0]),
+            Moc3DrawableVertex::new([0.0, 0.5], [0.5, 0.0]),
+        ],
+        vec![0, 2, 1],
+        Vec::new(),
+    );
+
+    let error = buffers
+        .update_drawables(&queue, std::slice::from_ref(&changed_indices))
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        mocari::render::wgpu::WgpuMeshUpdateError::Indices { drawable_index: 0 }
+    );
+}
+
+#[test]
+fn draw_returns_error_for_missing_texture_bind_group() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let mesh = test_mesh_with_draw_order(2, 0.0);
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &[mesh]).unwrap();
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.missing_texture_target"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.missing_texture_encoder"),
+    });
+
+    let error = {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.missing_texture_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        renderer.draw(&mut pass, &buffers, &[]).unwrap_err()
+    };
+
+    assert_eq!(error, WgpuRenderError::MissingTexture { texture_index: 2 });
+}
+
+#[test]
+fn draw_returns_error_for_masked_drawable_until_clipping_is_available() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let mesh = test_mesh_with_masks(0, 0.0, vec![3, 4]);
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &[mesh]).unwrap();
+
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.masked_target"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.masked_encoder"),
+    });
+
+    let error = {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.masked_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        renderer
+            .draw_with_textures(&mut pass, &buffers, &[texture])
+            .unwrap_err()
+    };
+
+    assert_eq!(
+        error,
+        WgpuRenderError::UnsupportedClippingMasks {
+            drawable_index: 0,
+            mask_count: 2
+        }
+    );
+}
+
+#[test]
+fn builds_clipping_plan_from_masked_drawables() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let meshes = [
+        test_mesh_with_masks(0, 0.0, vec![1, 2]),
+        test_mesh_with_draw_order(0, 1.0),
+        test_mesh_with_masks(0, 2.0, vec![1, 2]),
+        test_mesh_with_masks(0, 3.0, vec![3]),
+    ];
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &meshes).unwrap();
+
+    let plan = WgpuClippingPlan::from_mesh_buffers(&buffers);
+
+    assert_eq!(plan.unmasked_drawable_indices(), &[1]);
+    assert_eq!(plan.contexts().len(), 2);
+    assert_eq!(plan.contexts()[0].masks(), &[1, 2]);
+    assert_eq!(plan.contexts()[0].drawable_indices(), &[0, 2]);
+    assert_eq!(plan.contexts()[1].masks(), &[3]);
+    assert_eq!(plan.contexts()[1].drawable_indices(), &[3]);
+}
+
+#[test]
+fn merges_clipping_contexts_with_same_mask_set_regardless_of_order() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let meshes = [
+        test_mesh_with_masks(0, 0.0, vec![1, 2]),
+        test_mesh_with_masks(0, 1.0, vec![2, 1]),
+    ];
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &meshes).unwrap();
+
+    let plan = WgpuClippingPlan::from_mesh_buffers(&buffers);
+
+    assert_eq!(plan.contexts().len(), 1);
+    assert_eq!(plan.contexts()[0].masks(), &[1, 2]);
+    assert_eq!(plan.contexts()[0].drawable_indices(), &[0, 1]);
+}
+
+#[test]
+fn splits_clipping_contexts_when_inverted_flag_differs() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let meshes = [
+        test_mesh(0, 0, 0.0, vec![1, 2]),
+        test_mesh(0, 1 << 3, 1.0, vec![1, 2]),
+    ];
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &meshes).unwrap();
+
+    let plan = WgpuClippingPlan::from_mesh_buffers(&buffers);
+
+    assert_eq!(plan.contexts().len(), 2);
+    assert!(!plan.contexts()[0].inverted());
+    assert_eq!(plan.contexts()[0].drawable_indices(), &[0]);
+    assert!(plan.contexts()[1].inverted());
+    assert_eq!(plan.contexts()[1].drawable_indices(), &[1]);
+}
+
+#[test]
+fn assigns_single_texture_clipping_layouts_by_channel_and_cell() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let meshes = [
+        test_mesh_with_masks(0, 0.0, vec![10]),
+        test_mesh_with_masks(0, 1.0, vec![11]),
+        test_mesh_with_masks(0, 2.0, vec![12]),
+        test_mesh_with_masks(0, 3.0, vec![13]),
+        test_mesh_with_masks(0, 4.0, vec![14]),
+    ];
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &meshes).unwrap();
+    let mut plan = WgpuClippingPlan::from_mesh_buffers(&buffers);
+
+    plan.assign_single_texture_layouts().unwrap();
+
+    assert_eq!(
+        plan.contexts()[0].layout().unwrap().channel(),
+        WgpuMaskChannel::Red
+    );
+    assert_eq!(
+        plan.contexts()[0].layout().unwrap().bounds(),
+        WgpuClippingRect::new(0.0, 0.0, 0.5, 1.0)
+    );
+    assert_eq!(
+        plan.contexts()[1].layout().unwrap().channel(),
+        WgpuMaskChannel::Red
+    );
+    assert_eq!(
+        plan.contexts()[1].layout().unwrap().bounds(),
+        WgpuClippingRect::new(0.5, 0.0, 0.5, 1.0)
+    );
+    assert_eq!(
+        plan.contexts()[2].layout().unwrap().channel(),
+        WgpuMaskChannel::Green
+    );
+    assert_eq!(
+        plan.contexts()[2].layout().unwrap().bounds(),
+        WgpuClippingRect::new(0.0, 0.0, 1.0, 1.0)
+    );
+    assert_eq!(
+        plan.contexts()[4].layout().unwrap().channel_flag(),
+        [0.0, 0.0, 0.0, 1.0]
+    );
+}
+
+#[test]
+fn rejects_more_than_single_texture_clipping_layout_capacity() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let meshes = (0..37)
+        .map(|index| test_mesh_with_masks(0, index as f32, vec![index]))
+        .collect::<Vec<_>>();
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &meshes).unwrap();
+    let mut plan = WgpuClippingPlan::from_mesh_buffers(&buffers);
+
+    let error = plan.assign_single_texture_layouts().unwrap_err();
+
+    assert_eq!(
+        error,
+        WgpuClippingLayoutError::TooManyMasksForSingleTexture { mask_count: 37 }
+    );
+}
+
+#[test]
+fn prepares_clipping_bounds_and_matrices_from_clipped_drawables() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let clipped = Moc3DrawableMesh::from_parts(
+        0,
+        0,
+        1.0,
+        0.0,
+        vec![
+            Moc3DrawableVertex::new([-1.0, -2.0], [0.0, 0.0]),
+            Moc3DrawableVertex::new([3.0, -2.0], [1.0, 0.0]),
+            Moc3DrawableVertex::new([3.0, 4.0], [1.0, 1.0]),
+        ],
+        vec![0, 1, 2],
+        vec![1],
+    );
+    let mask = test_mesh_with_draw_order(0, 1.0);
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &[clipped, mask]).unwrap();
+    let mut plan = WgpuClippingPlan::from_mesh_buffers(&buffers);
+
+    plan.prepare_single_texture_masks(&buffers).unwrap();
+
+    let context = &plan.contexts()[0];
+    assert_rect_close(
+        context.all_clipped_draw_rect().unwrap(),
+        WgpuClippingRect::new(-1.2, -2.3, 4.4, 6.6),
+    );
+
+    let draw_matrix = context.matrix_for_draw().unwrap();
+    assert_f32_close(draw_matrix.transform_x(-1.2), 0.0);
+    assert_f32_close(draw_matrix.transform_x(3.2), 1.0);
+    assert_f32_close(draw_matrix.transform_y(-2.3), 1.0);
+    assert_f32_close(draw_matrix.transform_y(4.3), 0.0);
+
+    let mask_matrix = context.matrix_for_mask().unwrap();
+    assert_f32_close(mask_matrix.transform_x(-1.2), -1.0);
+    assert_f32_close(mask_matrix.transform_x(3.2), 1.0);
+    assert_f32_close(mask_matrix.transform_y(-2.3), -1.0);
+    assert_f32_close(mask_matrix.transform_y(4.3), 1.0);
+}
+
+#[test]
+fn creates_rgba8_texture_with_bind_group() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+
+    let texture = renderer
+        .create_rgba8_texture(
+            &device,
+            &queue,
+            2,
+            2,
+            &[
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(texture.width(), 2);
+    assert_eq!(texture.height(), 2);
+    assert_eq!(texture.texture().format(), wgpu::TextureFormat::Rgba8Unorm);
+    let _ = texture.texture();
+    let _ = texture.view();
+    let _ = texture.bind_group();
+}
+
+#[test]
+fn creates_mask_render_target_that_can_be_cleared() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+
+    let mask = renderer.create_mask_render_target(&device, 256).unwrap();
+
+    assert_eq!(mask.width(), 256);
+    assert_eq!(mask.height(), 256);
+    let _ = mask.texture();
+    let _ = mask.bind_group();
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.mask_target_encoder"),
+    });
+    {
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.mask_target_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: mask.view(),
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn rejects_zero_sized_mask_render_target() {
+    let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+
+    let error = renderer.create_mask_render_target(&device, 0).unwrap_err();
+
+    assert_eq!(
+        error,
+        WgpuTextureError::InvalidTextureSize {
+            width: 0,
+            height: 0
+        }
+    );
+}
+
+#[test]
+fn draws_with_uploaded_textures() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let mesh = test_mesh_with_draw_order(0, 0.0);
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &[mesh]).unwrap();
+
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.uploaded_texture_target"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.uploaded_texture_encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.uploaded_texture_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let drawn = renderer
+            .draw_with_textures(&mut pass, &buffers, &[texture])
+            .unwrap();
+        assert_eq!(drawn, 1);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn draws_with_uploaded_textures_and_transform() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let mut matrix = Matrix44::identity();
+    matrix.scale(0.5, 0.5);
+    let transform = renderer.create_transform(&device, &matrix);
+    let mesh = test_mesh_with_draw_order(0, 0.0);
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &[mesh]).unwrap();
+
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.transform_target"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.transform_encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.transform_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let drawn = renderer
+            .draw_with_textures_and_transform(&mut pass, &buffers, &[texture], &transform)
+            .unwrap();
+        assert_eq!(drawn, 1);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn draw_with_textures_skips_transparent_drawables() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let meshes = [
+        test_mesh_with_opacity(0, 0.0, 0.0),
+        test_mesh_with_opacity(0, 1.0, 1.0),
+    ];
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &meshes).unwrap();
+
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.transparent_drawable_target"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.transparent_drawable_encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.transparent_drawable_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let drawn = renderer
+            .draw_with_textures(&mut pass, &buffers, &[texture])
+            .unwrap();
+        assert_eq!(drawn, 1);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn draw_with_clipping_skips_empty_drawables() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let mesh = Moc3DrawableMesh::from_parts(0, 0, 1.0, 0.0, Vec::new(), Vec::new(), Vec::new());
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &[mesh]).unwrap();
+    let mut clipping_plan = WgpuClippingPlan::from_mesh_buffers(&buffers);
+    clipping_plan
+        .prepare_single_texture_masks(&buffers)
+        .unwrap();
+    let clipping_resources = renderer
+        .create_clipping_resources(&device, &clipping_plan)
+        .unwrap();
+    let mask_target = renderer.create_mask_render_target(&device, 16).unwrap();
+    let transform = renderer.create_transform(&device, &Matrix44::identity());
+
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.empty_drawable_target"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.empty_drawable_encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.empty_drawable_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let drawn = renderer
+            .draw_with_textures_clipping_and_transform(
+                &mut pass,
+                &buffers,
+                &[texture],
+                &clipping_resources,
+                &mask_target,
+                &transform,
+            )
+            .unwrap();
+        assert_eq!(drawn, 0);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn draw_with_clipping_skips_transparent_drawables() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let meshes = [
+        test_mesh_with_opacity(0, 0.0, 0.0),
+        test_mesh_with_opacity(0, 1.0, 1.0),
+    ];
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &meshes).unwrap();
+    let mut clipping_plan = WgpuClippingPlan::from_mesh_buffers(&buffers);
+    clipping_plan
+        .prepare_single_texture_masks(&buffers)
+        .unwrap();
+    let clipping_resources = renderer
+        .create_clipping_resources(&device, &clipping_plan)
+        .unwrap();
+    let mask_target = renderer.create_mask_render_target(&device, 16).unwrap();
+    let transform = renderer.create_transform(&device, &Matrix44::identity());
+
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.transparent_clipped_drawable_target"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.transparent_clipped_drawable_encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.transparent_clipped_drawable_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let drawn = renderer
+            .draw_with_textures_clipping_and_transform(
+                &mut pass,
+                &buffers,
+                &[texture],
+                &clipping_resources,
+                &mask_target,
+                &transform,
+            )
+            .unwrap();
+        assert_eq!(drawn, 1);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn draw_masks_keeps_transparent_mask_drawables() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let meshes = [
+        test_mesh_with_masks(0, 0.0, vec![1]),
+        test_mesh_with_opacity(0, 1.0, 0.0),
+    ];
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &meshes).unwrap();
+    let mut clipping_plan = WgpuClippingPlan::from_mesh_buffers(&buffers);
+    clipping_plan
+        .prepare_single_texture_masks(&buffers)
+        .unwrap();
+    let clipping_resources = renderer
+        .create_clipping_resources(&device, &clipping_plan)
+        .unwrap();
+
+    let mask_target = renderer.create_mask_render_target(&device, 16).unwrap();
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.transparent_mask_drawable_encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.transparent_mask_drawable_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: mask_target.view(),
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let drawn = renderer
+            .draw_masks_with_textures(&mut pass, &buffers, &clipping_resources, &[texture])
+            .unwrap();
+        assert_eq!(drawn, 1);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn draws_additive_and_multiplicative_drawables() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let texture = renderer
+        .create_rgba8_texture(&device, &queue, 1, 1, &[255, 255, 255, 255])
+        .unwrap();
+    let meshes = [
+        test_mesh_with_flags(0, 1 << 0, 0.0),
+        test_mesh_with_flags(0, 1 << 1, 1.0),
+    ];
+    let buffers = WgpuMeshBuffers::from_drawables(&device, &meshes).unwrap();
+    assert_eq!(
+        buffers.drawables()[0].blend_mode(),
+        Moc3DrawableBlendMode::Additive
+    );
+    assert_eq!(
+        buffers.drawables()[1].blend_mode(),
+        Moc3DrawableBlendMode::Multiplicative
+    );
+
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("live2d.test.blend_pipeline_target"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("live2d.test.blend_pipeline_encoder"),
+    });
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("live2d.test.blend_pipeline_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let drawn = renderer
+            .draw_with_textures(&mut pass, &buffers, &[texture])
+            .unwrap();
+        assert_eq!(drawn, 2);
+    }
+
+    let _ = encoder.finish();
+}
+
+#[test]
+fn rejects_rgba8_texture_with_wrong_byte_len() {
+    let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+    let renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+
+    let error = renderer
+        .create_rgba8_texture(&device, &queue, 2, 2, &[0; 15])
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        WgpuTextureError::InvalidRgbaLength {
+            width: 2,
+            height: 2,
+            expected: 16,
+            actual: 15
+        }
+    );
+}
+
+fn test_mesh_with_draw_order(texture_index: u8, draw_order: f32) -> Moc3DrawableMesh {
+    test_mesh_with_flags(texture_index, 0, draw_order)
+}
+
+fn test_mesh_with_flags(
+    texture_index: u8,
+    drawable_flags: u8,
+    draw_order: f32,
+) -> Moc3DrawableMesh {
+    test_mesh(texture_index, drawable_flags, draw_order, vec![])
+}
+
+fn test_mesh_with_masks(texture_index: u8, draw_order: f32, masks: Vec<i32>) -> Moc3DrawableMesh {
+    test_mesh(texture_index, 0, draw_order, masks)
+}
+
+fn test_mesh_with_opacity(texture_index: u8, draw_order: f32, opacity: f32) -> Moc3DrawableMesh {
+    Moc3DrawableMesh::from_parts(
+        i32::from(texture_index),
+        0,
+        opacity,
+        draw_order,
+        vec![
+            Moc3DrawableVertex::new([-0.5, -0.5], [0.0, 1.0]),
+            Moc3DrawableVertex::new([0.5, -0.5], [1.0, 1.0]),
+            Moc3DrawableVertex::new([0.0, 0.5], [0.5, 0.0]),
+        ],
+        vec![0, 1, 2],
+        Vec::new(),
+    )
+}
+
+fn test_mesh_with_render_order(
+    texture_index: u8,
+    draw_order: f32,
+    render_order: i32,
+) -> Moc3DrawableMesh {
+    Moc3DrawableMesh::from_parts_with_render_order(
+        i32::from(texture_index),
+        0,
+        1.0,
+        draw_order,
+        render_order,
+        vec![
+            Moc3DrawableVertex::new([-0.5, -0.5], [0.0, 0.0]),
+            Moc3DrawableVertex::new([0.5, -0.5], [1.0, 0.0]),
+            Moc3DrawableVertex::new([0.0, 0.5], [0.5, 1.0]),
+        ],
+        vec![0, 1, 2],
+        Vec::new(),
+    )
+}
+
+fn test_mesh(
+    texture_index: u8,
+    drawable_flags: u8,
+    draw_order: f32,
+    masks: Vec<i32>,
+) -> Moc3DrawableMesh {
+    Moc3DrawableMesh::from_parts(
+        i32::from(texture_index),
+        drawable_flags,
+        1.0,
+        draw_order,
+        vec![
+            Moc3DrawableVertex::new([-0.5, -0.5], [0.0, 1.0]),
+            Moc3DrawableVertex::new([0.5, -0.5], [1.0, 1.0]),
+            Moc3DrawableVertex::new([0.0, 0.5], [0.5, 0.0]),
+        ],
+        vec![0, 1, 2],
+        masks,
+    )
+}
+
+fn assert_rect_close(actual: WgpuClippingRect, expected: WgpuClippingRect) {
+    assert_f32_close(actual.x(), expected.x());
+    assert_f32_close(actual.y(), expected.y());
+    assert_f32_close(actual.width(), expected.width());
+    assert_f32_close(actual.height(), expected.height());
+}
+
+fn assert_f32_close(actual: f32, expected: f32) {
+    let difference = (actual - expected).abs();
+    assert!(
+        difference <= 0.00001,
+        "expected {actual} to be within 0.00001 of {expected}, difference {difference}"
+    );
+}

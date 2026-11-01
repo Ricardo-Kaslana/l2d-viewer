@@ -1,0 +1,185 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (for example v0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - name: Verify tag and project versions agree
+        shell: bash
+        run: |
+          git rev-parse --verify "${RELEASE_TAG}" >/dev/null
+          tag="${RELEASE_TAG#v}"
+          pub=$(sed -n 's/^version: \([^+]*\).*/\1/p' app/pubspec.yaml)
+          cargo_ver=$(awk '/^\[workspace.package\]/{found=1; next} found && /^version =/{gsub(/"/, "", $3); print $3; exit}' Cargo.toml)
+          test "$tag" = "$pub" || { echo "::error::tag $tag != pubspec $pub"; exit 1; }
+          test "$tag" = "$cargo_ver" || { echo "::error::tag $tag != Cargo $cargo_ver"; exit 1; }
+          echo "Building tagged version $tag"
+
+  android-build:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.35.5"
+          cache: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+          targets: aarch64-linux-android
+      - uses: nttld/setup-ndk-action@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+      - run: cd app && flutter pub get --enforce-lockfile
+      - name: Configure optional release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] \
+             && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > app/android/app/release.jks
+            cat > app/android/key.properties <<EOF
+          storeFile=release.jks
+          storePassword=${ANDROID_KEYSTORE_PASSWORD}
+          keyAlias=${ANDROID_KEY_ALIAS}
+          keyPassword=${ANDROID_KEY_PASSWORD}
+          EOF
+            echo "signed=true" >> "$GITHUB_ENV"
+            echo "release signing enabled"
+          else
+            echo "signed=false" >> "$GITHUB_ENV"
+            echo "::warning::No Android signing secrets; producing a debug-signed APK"
+          fi
+      - name: Cross-compile Rust for arm64
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+        run: cargo build -p mocari_host --target aarch64-linux-android --release
+      - name: Stage libmocari_host.so
+        working-directory: app
+        run: dart run tool/stage_android_libs.dart
+      - run: cd app && flutter build apk --release --target-platform android-arm64
+      - name: Name APK
+        shell: bash
+        run: |
+          suffix=""
+          if [ "${signed}" != "true" ]; then suffix="-debug-signed"; fi
+          cp app/build/app/outputs/flutter-apk/app-release.apk \
+            "Live2DViewer-${RELEASE_TAG}-android-arm64${suffix}.apk"
+          ls -lh Live2DViewer-*.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: Live2DViewer-*.apk
+          if-no-files-found: error
+      - name: Remove temporary signing files
+        if: always()
+        shell: bash
+        run: rm -f app/android/key.properties app/android/app/release.jks
+
+  windows-build:
+    needs: validate
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.35.5"
+          cache: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+      - uses: Swatinem/rust-cache@v2
+      - run: flutter config --enable-windows-desktop
+      - run: cd app && flutter pub get --enforce-lockfile
+      - run: cd app && flutter build windows --release
+      - name: Package Windows release
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE, THIRD_PARTY_NOTICES.md, third_party/mocari/LICENSE `
+            -Destination app/build/windows/x64/runner/Release/
+          Compress-Archive -Path app/build/windows/x64/runner/Release/* `
+            -DestinationPath "Live2DViewer-$env:RELEASE_TAG-windows-x64.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: Live2DViewer-*-windows-x64.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [android-build, windows-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-release"
+          path: artifacts
+          merge-multiple: true
+      - name: Create checksums
+        run: |
+          cd artifacts
+          sha256sum *.apk *.zip > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Live2D Viewer ${{ env.RELEASE_TAG }}
+          draft: true
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+          body: |
+            Automated build for ${{ env.RELEASE_TAG }}.
+
+            Android artifacts are debug-signed unless release signing secrets
+            were configured. Windows artifacts are unsigned. Verify
+            SHA256SUMS before installing.
+          files: |
+            artifacts/*.apk
+            artifacts/*.zip
+            artifacts/SHA256SUMS
+            LICENSE
+            THIRD_PARTY_NOTICES.md
+            third_party/mocari/LICENSE
