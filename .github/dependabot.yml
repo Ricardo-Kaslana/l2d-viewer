@@ -1,4 +1,5 @@
-# Group routine minor/patch updates; major upgrades are reviewed manually.
+# Group routine minor/patch updates. Rendering, platform, and code-generation
+# dependencies stay on manual upgrades.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -13,8 +14,21 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # Keep the runtime in lockstep with the pinned FRB codegen (2.9.0).
+      - dependency-name: "flutter_rust_bridge"
+      # Rendering and Android platform crates are upgraded manually.
+      - dependency-name: "wgpu"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "wgpu-types"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "ndk"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "ndk-context"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "ndk-sys"
-        update-types: ["version-update:semver-minor"]
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "pollster"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   - package-ecosystem: pub
     directory: "/app"
@@ -28,6 +42,15 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # Keep the runtime in lockstep with the pinned FRB codegen (2.9.0).
+      - dependency-name: "flutter_rust_bridge"
+      # Code-generation and generated-model toolchains are upgraded together.
+      - dependency-name: "build_runner"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "freezed"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "freezed_annotation"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
