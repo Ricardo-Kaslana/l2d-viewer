@@ -8,7 +8,7 @@ wgpu, and the platform graphics APIs provide the model runtime and renderer.
 > sponsored by, or certified by Live2D Inc. "Live2D" and "Cubism" are
 > trademarks or registered trademarks of their respective owners.
 
-> **Version 0.2.0.** This is an MVP. Windows and Android rendering are working,
+> **Version 0.2.1.** This is an MVP. Windows and Android rendering are working,
 > but audio, hit-area input, store-ready signing, and automated GPU coverage
 > are not complete. See [`docs/STATUS.md`](docs/STATUS.md).
 
@@ -196,9 +196,16 @@ design/icon/                 Icon source and generators
 - Hit-testing exists in the Rust library but is not wired to Flutter input.
 - No Google Play submission or store-ready release signing. Release signing is
   optional and read from `app/android/key.properties`.
+- Without signing secrets, release workflows produce debug-signed APKs. Android
+  debug keys are generated per CI runner, so APKs from different runs may
+  require uninstalling the previous app before installation. Configure signing
+  secrets for upgradeable builds.
 - GPU-dependent tests are not run on GitHub-hosted runners. Windows 60fps
   stability, resize stress, and real-device Android checks remain manual.
 - Remote resume, incremental updates, and rollback are not implemented.
+- Initial fit uses the union of drawable mesh bounds. Models authored for a
+  custom in-game camera (large background or clipped geometry) can appear small
+  at 1x; use pinch/wheel or the **In** control to zoom.
 - No macOS, Linux, or Web runner.
 
 ## Contributing

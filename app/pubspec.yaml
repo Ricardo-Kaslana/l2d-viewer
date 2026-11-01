@@ -1,7 +1,7 @@
 name: live2d_viewer
 description: "Unofficial Live2D model viewer for Windows and Android"
 publish_to: 'none'
-version: 0.2.0+4
+version: 0.2.1+5
 
 environment:
   sdk: ^3.9.2

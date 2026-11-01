@@ -331,7 +331,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               for (final fps in kFpsCapOptions)
                 ButtonSegment<int>(
                   value: fps,
-                  label: Text(fps == 0 ? 'Unlimited' : '$fps'),
+                  label: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(fps == 0 ? 'Unlimited' : '$fps'),
+                  ),
                 ),
             ],
             selected: {settings.targetFps},

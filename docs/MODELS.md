@@ -46,6 +46,13 @@ sandbox may require Android's "All files access" permission. The permission is
 requested only when you add an external path; app-managed and remote models do
 not require it.
 
+The initial view fits the union of all drawable mesh bounds. That includes
+background, deformation, and other geometry that may be mostly transparent or
+clipped. Models authored for a custom in-game camera can therefore look small
+at 1x even though the renderer is behaving correctly. Pinch on a phone, scroll
+on Windows, or use the **In** button to zoom; **Reset** returns to the
+mesh-bounds fit.
+
 ## Test models
 
 Asset-dependent Rust tests are marked `#[ignore]` and read:

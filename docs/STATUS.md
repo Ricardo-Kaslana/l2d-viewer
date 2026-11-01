@@ -1,6 +1,6 @@
 # Project Status
 
-- **Snapshot:** 2026-11-01, version 0.2.0
+- **Snapshot:** 2026-11-02, version 0.2.1
 - **Basis:** current source tree and tests. Historical plans are not treated as
   evidence of completion.
 - **Stage:** MVP with working Windows and Android rendering; not a store-ready

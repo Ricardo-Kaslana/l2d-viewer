@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/settings_repo.dart';
 import '../providers/model_provider.dart';
 import '../providers/renderer_provider.dart';
 import '../widgets/adaptive_layout.dart';
@@ -46,16 +47,22 @@ class _HomePageState extends ConsumerState<HomePage> {
     // Schedule the initial library scan on first mount of HomePage so
     // the narrow-shell status text ("Library ready (N models)" /
     // "Loading library…") reflects reality before the user navigates
-    // into Library. Without this the status text sits at
-    // "Library idle" until the user taps "选择模型", because nothing
-    // else (the embedded LibraryPage in the wide shell, or a future
-    // push to /library) is observable in the narrow shell on Android
-    // when the app is first launched.
+    // into Library. Wait for persisted settings first: scanning while
+    // SettingsRepo is still empty would miss every custom model path
+    // and leave Home showing "No models yet" on cold start, even though
+    // the Library page would immediately discover the models.
     if (!_initialScanScheduled) {
       _initialScanScheduled = true;
-      Future.microtask(
-        () => ref.read(modelProvider.notifier).loadAvailableModels(),
-      );
+      Future.microtask(() async {
+        try {
+          await ref.read(settingsRepoProvider.future);
+        } catch (_) {
+          // Settings failed to load — scan with defaults instead of
+          // leaving Home stuck on "Library idle".
+        }
+        if (!mounted) return;
+        await ref.read(modelProvider.notifier).loadAvailableModels();
+      });
     }
   }
 

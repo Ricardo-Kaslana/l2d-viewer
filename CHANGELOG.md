@@ -5,6 +5,24 @@ All notable changes to Live2D Viewer are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The project intends to use semantic versioning for tagged releases.
 
+## [0.2.1] - 2026-11-02
+
+### Fixed
+
+- Home now waits for persisted settings before its initial library scan, so a
+  configured custom model path is visible after a cold start instead of a
+  spurious "No models yet" state.
+- The "Unlimited" frame-rate cap label scales down instead of wrapping at narrow
+  phone widths.
+
+### Changed
+
+- Documented that the initial view fits the union of drawable mesh bounds;
+  models authored for a custom in-game camera may need manual zoom.
+- Documented that debug-signed APKs from different CI runs may not upgrade each
+  other because Android debug keys are runner-local; configure signing secrets
+  for upgradeable builds.
+
 ## [0.2.0] - 2026-11-01
 
 First public-source release. This is an MVP, not a store-ready release.

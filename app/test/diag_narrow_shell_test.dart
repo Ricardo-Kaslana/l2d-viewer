@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -35,12 +37,18 @@ class _TraceRepo implements ModelRepository {
   }
 }
 
-Widget _harness({required _TraceRepo repo, required SettingsRepo settings}) {
+Widget _harness({
+  required _TraceRepo repo,
+  required SettingsRepo settings,
+  Completer<SettingsRepo>? settingsCompleter,
+}) {
   return UncontrolledProviderScope(
     container: ProviderContainer(
       overrides: [
         modelRepositoryProvider.overrideWith((_) => repo),
-        settingsRepoProvider.overrideWith((_) async => settings),
+        settingsRepoProvider.overrideWith(
+          (_) => settingsCompleter?.future ?? Future.value(settings),
+        ),
       ],
     ),
     child: MaterialApp(
@@ -111,6 +119,64 @@ void main() {
       expect(settled.status, ModelSelectionStatus.ready);
       expect(settled.availableModels, hasLength(1));
       expect(repo.sawScanned, isTrue);
+    },
+  );
+
+  testWidgets(
+    'narrow shell: HomePage waits for delayed settings before scanning',
+    (tester) async {
+      final settingsCompleter = Completer<SettingsRepo>();
+      var settingsLoaded = false;
+      final repo = _TraceRepo(
+        // An early scan would get an empty library and stay stuck on
+        // "No models yet"; the rescan after settings resolve must see
+        // the custom-path model.
+        onList: () async => settingsLoaded
+            ? const [
+                ManifestEntry(
+                  id: 'haru',
+                  name: 'Haru',
+                  directoryPath: '/storage/emulated/0/Models/haru',
+                ),
+              ]
+            : const [],
+      );
+
+      await tester.binding.setSurfaceSize(const Size(411, 891));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        _harness(
+          repo: repo,
+          settings: SettingsRepo.empty(),
+          settingsCompleter: settingsCompleter,
+        ),
+      );
+      await tester.pump();
+
+      expect(
+        repo.calls,
+        0,
+        reason:
+            'HomePage must not scan with the temporary empty SettingsRepo '
+            'while persisted settings are still loading.',
+      );
+
+      settingsLoaded = true;
+      settingsCompleter.complete(
+        SettingsRepo.empty()
+          ..customModelPaths = <String>['/storage/emulated/0/Models'],
+      );
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(repo.calls, greaterThanOrEqualTo(1));
+      expect(
+        find.textContaining('Library ready (1 model)'),
+        findsOneWidget,
+        reason:
+            'After delayed settings arrive, HomePage must rescan and show '
+            'the models from the configured custom paths.',
+      );
     },
   );
 
