@@ -9,16 +9,16 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_rust_bridge: 2.9.0
+  flutter_rust_bridge: 2.13.0
   flutter_riverpod: ^2.6.1
-  path_provider: ^2.1.0
+  path_provider: ^2.1.6
   http: ^1.2.0
-  crypto: ^3.0.3
+  crypto: ^3.0.8
   # FRB-generated frame_driver.dart imports freezed_annotation at
   # runtime (the @freezed sealed FrameEvent class). The analyzer
   # flags it as "depend_on_referenced_packages" unless it is a
   # regular dependency rather than only a dev dependency.
-  freezed_annotation: ^2.4.4
+  freezed_annotation: ^3.1.0
   # File/directory picker for the custom model path browser.
   file_picker: ^8.0.0
   # Runtime permission requests for Android external storage access.
@@ -30,8 +30,8 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
-  freezed: ^2.5.7
-  build_runner: ^2.4.0
+  freezed: ^4.0.3
+  build_runner: ^2.17.1
 
 flutter:
   uses-material-design: true
