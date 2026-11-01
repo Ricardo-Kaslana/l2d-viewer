@@ -13,7 +13,8 @@ texts shipped with those components.
 - Upstream: <https://github.com/Eatgrapes/Mocari>
 - Baseline: `mocari` 0.4.0 (crates.io)
 - License: MIT, Copyright (c) 2026 Eatgrapes
-- License text: `third_party/mocari/LICENSE`
+- License text: `third_party/mocari/LICENSE` (release archives include it as
+  `LICENSE-Mocari`)
 - Local modifications are documented in `third_party/mocari/UPSTREAM.md`.
 
 The vendored copy is patched to match Cubism's out-of-range disable semantics,

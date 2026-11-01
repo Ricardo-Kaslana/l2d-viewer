@@ -140,8 +140,10 @@ jobs:
       - name: Package Windows release
         shell: pwsh
         run: |
-          Copy-Item LICENSE, THIRD_PARTY_NOTICES.md, third_party/mocari/LICENSE `
-            -Destination app/build/windows/x64/runner/Release/
+          Copy-Item LICENSE, THIRD_PARTY_NOTICES.md `
+            -Destination app/build/windows/x64/runner/Release/ -Force
+          Copy-Item third_party/mocari/LICENSE `
+            -Destination app/build/windows/x64/runner/Release/LICENSE-Mocari -Force
           Compress-Archive -Path app/build/windows/x64/runner/Release/* `
             -DestinationPath Live2DViewer-windows-x64.zip -Force
       - uses: actions/upload-artifact@v4
