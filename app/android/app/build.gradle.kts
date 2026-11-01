@@ -1,3 +1,4 @@
+import java.io.File
 import java.io.FileInputStream
 import java.util.Properties
 
@@ -22,7 +23,13 @@ android {
     // the pinned r26d version installed under the Android SDK.
     val ndkHome = System.getenv("ANDROID_NDK_HOME")
     if (!ndkHome.isNullOrBlank()) {
+        val ndkProperties = Properties()
+        val ndkSourceProperties = File(ndkHome, "source.properties")
+        if (ndkSourceProperties.exists()) {
+            ndkProperties.load(FileInputStream(ndkSourceProperties))
+        }
         ndkPath = ndkHome
+        ndkProperties.getProperty("Pkg.Revision")?.let { ndkVersion = it }
     } else {
         ndkVersion = "26.3.11579264"
     }
