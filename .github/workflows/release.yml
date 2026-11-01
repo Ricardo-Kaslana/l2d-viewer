@@ -56,10 +56,12 @@ jobs:
         with:
           toolchain: "1.97.1"
           targets: aarch64-linux-android
-      - uses: nttld/setup-ndk-action@v1
+      - uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: r26d
+      - name: Export NDK path
+        run: echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
       - run: cd app && flutter pub get --enforce-lockfile
       - name: Configure optional release signing
         env:
@@ -113,7 +115,9 @@ jobs:
 
   windows-build:
     needs: validate
-    runs-on: windows-latest
+    # Flutter 3.35.5 only maps VS 17 to the 2022 generator; windows-latest
+    # now ships VS 18, which Flutter mis-selects as VS 2019.
+    runs-on: windows-2022
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
