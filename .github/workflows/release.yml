@@ -105,7 +105,7 @@ jobs:
           cp app/build/app/outputs/flutter-apk/app-release.apk \
             "Live2DViewer-${RELEASE_TAG}-android-arm64${suffix}.apk"
           ls -lh Live2DViewer-*.apk
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android-release
           path: Live2DViewer-*.apk
@@ -146,7 +146,7 @@ jobs:
             -Destination app/build/windows/x64/runner/Release/LICENSE-Mocari -Force
           Compress-Archive -Path app/build/windows/x64/runner/Release/* `
             -DestinationPath "Live2DViewer-$env:RELEASE_TAG-windows-x64.zip" -Force
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-release
           path: Live2DViewer-*-windows-x64.zip
