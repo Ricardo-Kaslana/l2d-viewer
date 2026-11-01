@@ -18,10 +18,17 @@ if [ ! -x "$linker" ]; then
   echo "NDK linker not found: $linker" >&2
   exit 1
 fi
+ar="$ndk/toolchains/llvm/prebuilt/$host_tag/bin/llvm-ar"
+if [ ! -x "$ar" ]; then
+  echo "NDK archiver not found: $ar" >&2
+  exit 1
+fi
 
 cd "$repo_root"
 rustup target add aarch64-linux-android
-CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$linker" \
+CC_aarch64_linux_android="$linker" \
+  AR_aarch64_linux_android="$ar" \
+  CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$linker" \
   cargo build -p mocari_host --target aarch64-linux-android --release
 
 cd app

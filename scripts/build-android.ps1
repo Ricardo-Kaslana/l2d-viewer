@@ -113,11 +113,20 @@ ANDROID_NDK_HOME 未设置，且未通过 -NdkHome 传入。
         Write-Error "NDK linker 不存在: $Linker"
         exit 1
     }
+    $ArName = if ($env:OS -eq 'Windows_NT') { 'llvm-ar.exe' } else { 'llvm-ar' }
+    $Ar = Join-Path $NdkBin $ArName
+    if (-not (Test-Path $Ar)) {
+        Write-Error "NDK archiver 不存在: $Ar"
+        exit 1
+    }
     $env:PATH = "$NdkBin;$env:PATH"
+    $env:CC_aarch64_linux_android = $Linker
+    $env:AR_aarch64_linux_android = $Ar
     $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = $Linker
     $env:ANDROID_NDK_HOME = $EffectiveNdk
     Write-Host "[build-android] ANDROID_NDK_HOME = $EffectiveNdk"
-    Write-Host "[build-android] linker = $Linker"
+    Write-Host "[build-android] cc = $Linker"
+    Write-Host "[build-android] ar = $Ar"
 }
 
 # --- 1. cargo 交叉编译 -------------------------------------------------------
