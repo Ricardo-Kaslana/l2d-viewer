@@ -174,7 +174,7 @@ jobs:
           cat SHA256SUMS
       - name: Prepare license files
         run: cp third_party/mocari/LICENSE LICENSE-Mocari
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: Live2D Viewer ${{ env.RELEASE_TAG }}
