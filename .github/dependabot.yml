@@ -51,6 +51,8 @@ updates:
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "freezed_annotation"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # path_provider 2.1.6+ requires Dart >=3.10; Flutter 3.35.5 ships Dart 3.9.2.
+      - dependency-name: "path_provider"
 
   - package-ecosystem: github-actions
     directory: "/"
