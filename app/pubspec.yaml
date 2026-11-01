@@ -18,7 +18,7 @@ dependencies:
   # runtime (the @freezed sealed FrameEvent class). The analyzer
   # flags it as "depend_on_referenced_packages" unless it is a
   # regular dependency rather than only a dev dependency.
-  freezed_annotation: ^2.4.4
+  freezed_annotation: ^3.1.0
   # File/directory picker for the custom model path browser.
   file_picker: ^8.0.0
   # Runtime permission requests for Android external storage access.
@@ -30,7 +30,7 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
-  freezed: ^2.5.7
+  freezed: ^3.1.0
   build_runner: ^2.4.0
 
 flutter:
