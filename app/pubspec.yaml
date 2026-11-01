@@ -11,7 +11,7 @@ dependencies:
     sdk: flutter
   flutter_rust_bridge: 2.9.0
   flutter_riverpod: ^2.6.1
-  path_provider: ^2.1.0
+  path_provider: ^2.1.6
   http: ^1.2.0
   crypto: ^3.0.3
   # FRB-generated frame_driver.dart imports freezed_annotation at
