@@ -100,8 +100,9 @@ Commit generated diffs with API changes. `ci.yml` checks for drift.
   `app/tool/stage_android_libs.dart`.
 - Release signing reads `app/android/key.properties`; never commit it or a
   keystore.
-- Tag releases are built as draft GitHub Releases. Without signing secrets the
-  APK is debug-signed and the Windows ZIP is unsigned.
+- Pushing a `v*` tag publishes a GitHub Release automatically once both builds
+  pass. Without signing secrets the APK is debug-signed and the Windows ZIP is
+  unsigned.
 - Do not publish crates.io packages or push a public repository as part of a
   routine change.
 

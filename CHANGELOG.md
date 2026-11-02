@@ -5,6 +5,14 @@ All notable changes to Live2D Viewer are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The project intends to use semantic versioning for tagged releases.
 
+## [Unreleased]
+
+### Changed
+
+- Tagged releases are now published automatically once the Android and Windows
+  builds succeed, and the README documents where to download and verify the
+  installers.
+
 ## [0.2.1] - 2026-11-02
 
 ### Fixed
