@@ -12,6 +12,50 @@ wgpu, and the platform graphics APIs provide the model runtime and renderer.
 > but audio, hit-area input, store-ready signing, and automated GPU coverage
 > are not complete. See [`docs/STATUS.md`](docs/STATUS.md).
 
+## Download
+
+Prebuilt installers for the latest tagged version are on the
+[Releases page](https://github.com/Ricardo-Kaslana/l2d-viewer/releases/latest).
+Each release publishes `SHA256SUMS` next to the installers; verify the download
+before installing.
+
+### Windows 10/11 x64
+
+1. Download `Live2DViewer-<version>-windows-x64.zip`.
+2. Extract the archive and run `live2d_viewer.exe`.
+
+The Windows build is not code-signed, so SmartScreen may require
+**More info → Run anyway**.
+
+### Android 7.0+ (arm64-v8a)
+
+1. Download `Live2DViewer-<version>-android-arm64-debug-signed.apk`.
+2. Allow installs from unknown sources when prompted, then open the APK.
+
+The public APK is debug-signed because the release keystore is not published.
+Debug keys differ between CI runs, so uninstall a previous debug-signed build
+before installing a new one. Configure the CI signing secrets for upgradeable
+builds.
+
+### Verify the download
+
+On Linux or macOS, run this from the folder that contains `SHA256SUMS` and the
+downloaded files:
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
+On Windows PowerShell, compare the output with the matching line in
+`SHA256SUMS`:
+
+```powershell
+Get-FileHash .\Live2DViewer-<version>-windows-x64.zip -Algorithm SHA256
+```
+
+The application ships without models; see
+[Model assets: bring your own](#model-assets-bring-your-own).
+
 ## What it does
 
 - Loads standard Cubism `*.model3.json` models, `.moc3` data, textures,

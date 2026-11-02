@@ -178,8 +178,9 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: Live2D Viewer ${{ env.RELEASE_TAG }}
-          draft: true
+          draft: false
           prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+          generate_release_notes: true
           body: |
             Automated build for ${{ env.RELEASE_TAG }}.
 
